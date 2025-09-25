@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import '../models/chat_message.dart';
 import '../services/ai_chat_service.dart';
 import '../providers/chat_provider.dart';
@@ -64,19 +65,15 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
 
     try {
-      print('🔄 [Chat Screen] 开始调用AI服务...');
-      // 调用AI服务
-      final response = await _aiService.sendMessage(message: message);
-      print('✅ [Chat Screen] AI服务调用成功，回复: $response');
-      
-      // 移除加载消息，添加AI回复
-      chatProvider.removeLastMessage();
-      chatProvider.addMessage(ChatMessage(
-        content: response,
-        isUser: false,
-        timestamp: DateTime.now(),
-      ));
-      print('✅ [Chat Screen] AI回复已添加到聊天列表');
+      print('🔄 [Chat Screen] 开始调用AI服务(流式)...');
+      // 使用流式接口逐步更新最后一条AI消息
+      await for (final token in _aiService.streamMessage(message: message)) {
+        chatProvider.updateLastAssistantMessage(token);
+        _scrollToBottom();
+      }
+      // 流结束，标记完成，移除 loading 状态
+      chatProvider.updateLastAssistantMessage('', done: true);
+      print('✅ [Chat Screen] 流式生成完成');
     } catch (e) {
       print('❌ [Chat Screen] AI服务调用失败: $e');
       // 移除加载消息，添加错误消息
@@ -211,14 +208,74 @@ class _ChatScreenState extends State<ChatScreen> {
                         Text('AI正在思考...'),
                       ],
                     )
-                  : Text(
-                      message.content,
-                      style: TextStyle(
-                        color: message.isUser
-                            ? Colors.white
-                            : Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
+                  : message.isUser
+                      ? Text(
+                          message.content,
+                          style: const TextStyle(color: Colors.white),
+                        )
+                      : MarkdownBody(
+                          data: message.content,
+                          selectable: true,
+                          styleSheet: MarkdownStyleSheet(
+                            p: TextStyle(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              fontSize: 16,
+                            ),
+                            h1: TextStyle(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            h2: TextStyle(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            h3: TextStyle(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            code: TextStyle(
+                              backgroundColor: Theme.of(context).colorScheme.surface,
+                              color: Theme.of(context).colorScheme.onSurface,
+                              fontFamily: 'monospace',
+                            ),
+                            codeblockDecoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.surface,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
+                              ),
+                            ),
+                            blockquote: TextStyle(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              fontStyle: FontStyle.italic,
+                            ),
+                            blockquoteDecoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                              border: Border(
+                                left: BorderSide(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  width: 4,
+                                ),
+                              ),
+                            ),
+                            listBullet: TextStyle(
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            tableBorder: TableBorder.all(
+                              color: Theme.of(context).colorScheme.outline.withOpacity(0.3),
+                            ),
+                            tableHead: TextStyle(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            tableBody: TextStyle(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
             ),
           ),
           if (message.isUser) ...[

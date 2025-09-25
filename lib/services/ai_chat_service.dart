@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'dart:async';
 
 class AIChatService {
   static const String _baseUrl = 'http://47.94.76.216/api/ai/chat';
+  static const String _streamUrl = 'http://47.94.76.216/api/ai/stream';
   
   Future<String> sendMessage({
     required String message,
@@ -79,6 +81,79 @@ class AIChatService {
       print('💥 [AI Chat Service] 发生异常: $e');
       print('📚 [AI Chat Service] 异常类型: ${e.runtimeType}');
       throw Exception('网络错误: $e');
+    }
+  }
+
+  /// SSE 流式输出，返回逐步生成的 token 流
+  Stream<String> streamMessage({
+    required String message,
+    String model = 'deepseek-ai/DeepSeek-V3.1',
+    double temperature = 0.8,
+    int maxTokens = 500,
+  }) async* {
+    final client = http.Client();
+    try {
+      final uri = Uri.parse(_streamUrl).replace(
+        queryParameters: {
+          'message': message,
+          'model': model,
+          'temperature': temperature.toString(),
+          'maxTokens': maxTokens.toString(),
+        },
+      );
+
+      print('🌊 [AI Chat Service] 建立SSE连接: $uri');
+
+      final request = http.Request('GET', uri);
+      request.headers['Accept'] = 'text/event-stream';
+      request.headers['Cache-Control'] = 'no-cache';
+      request.headers['Connection'] = 'keep-alive';
+
+      final response = await client.send(request);
+      print('📊 [AI Chat Service] SSE状态码: ${response.statusCode}');
+      if (response.statusCode != 200) {
+        final body = await response.stream.bytesToString();
+        print('❌ [AI Chat Service] SSE连接失败: ${response.statusCode} -> $body');
+        throw Exception('SSE连接失败: ${response.statusCode}');
+      }
+
+      // 解析 Server-Sent Events 协议
+      String? pendingEventType; // 例如: token
+      final stream = response.stream
+          .transform(utf8.decoder)
+          .transform(const LineSplitter());
+
+      await for (final line in stream) {
+        // 空行表示一个事件结束
+        if (line.isEmpty) {
+          pendingEventType = null;
+          continue;
+        }
+        if (line.startsWith('event:')) {
+          pendingEventType = line.substring(6).trim();
+          continue;
+        }
+        if (line.startsWith('data:')) {
+          final data = line.substring(5).trim();
+          // 若服务端使用 event: token，我们仅在该事件下发送；否则统一发送
+          if (pendingEventType == null || pendingEventType == 'token') {
+            if (data.isNotEmpty) {
+              yield data;
+            }
+          }
+          continue;
+        }
+        // 兼容没有 event 前缀的纯文本行（某些实现直接输出token）
+        if (!line.contains(':')) {
+          yield line;
+        }
+      }
+      print('✅ [AI Chat Service] SSE完成');
+    } catch (e) {
+      print('💥 [AI Chat Service] SSE异常: $e');
+      throw Exception('SSE错误: $e');
+    } finally {
+      client.close();
     }
   }
 }
