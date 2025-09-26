@@ -93,67 +93,126 @@ class AIChatService {
   }) async* {
     final client = http.Client();
     try {
-      final uri = Uri.parse(_streamUrl).replace(
-        queryParameters: {
-          'message': message,
-          'model': model,
-          'temperature': temperature.toString(),
-          'maxTokens': maxTokens.toString(),
-        },
-      );
+      // 先尝试POST请求
+      final requestBody = {
+        'message': message,
+        'model': model,
+        'temperature': temperature,
+        'maxTokens': maxTokens,
+      };
 
-      print('🌊 [AI Chat Service] 建立SSE连接: $uri');
+      print('🌊 [AI Chat Service] 建立SSE连接: $_streamUrl');
+      print('📤 [AI Chat Service] 请求体: ${jsonEncode(requestBody)}');
 
-      final request = http.Request('GET', uri);
+      final request = http.Request('POST', Uri.parse(_streamUrl));
+      request.headers['Content-Type'] = 'application/json';
       request.headers['Accept'] = 'text/event-stream';
       request.headers['Cache-Control'] = 'no-cache';
       request.headers['Connection'] = 'keep-alive';
+      request.body = jsonEncode(requestBody);
 
       final response = await client.send(request);
       print('📊 [AI Chat Service] SSE状态码: ${response.statusCode}');
+      
       if (response.statusCode != 200) {
         final body = await response.stream.bytesToString();
-        print('❌ [AI Chat Service] SSE连接失败: ${response.statusCode} -> $body');
-        throw Exception('SSE连接失败: ${response.statusCode}');
+        print('❌ [AI Chat Service] POST SSE连接失败: ${response.statusCode} -> $body');
+        
+        // 如果POST失败，尝试GET请求
+        print('🔄 [AI Chat Service] 尝试GET请求...');
+        final uri = Uri.parse(_streamUrl).replace(
+          queryParameters: {
+            'message': message,
+            'model': model,
+            'temperature': temperature.toString(),
+            'maxTokens': maxTokens.toString(),
+          },
+        );
+        print('🌐 [AI Chat Service] GET请求URL: $uri');
+        
+        final getRequest = http.Request('GET', uri);
+        getRequest.headers['Accept'] = 'text/event-stream';
+        getRequest.headers['Cache-Control'] = 'no-cache';
+        getRequest.headers['Connection'] = 'keep-alive';
+        
+        final getResponse = await client.send(getRequest);
+        print('📊 [AI Chat Service] GET SSE状态码: ${getResponse.statusCode}');
+        
+        if (getResponse.statusCode != 200) {
+          final getBody = await getResponse.stream.bytesToString();
+          print('❌ [AI Chat Service] GET SSE连接也失败: ${getResponse.statusCode} -> $getBody');
+          throw Exception('SSE连接失败: POST ${response.statusCode}, GET ${getResponse.statusCode}');
+        }
+        
+        // 使用GET响应继续处理
+        await for (final token in _processSSEStream(getResponse.stream)) {
+          yield token;
+        }
+        return;
       }
 
-      // 解析 Server-Sent Events 协议
-      String? pendingEventType; // 例如: token
-      final stream = response.stream
-          .transform(utf8.decoder)
-          .transform(const LineSplitter());
-
-      await for (final line in stream) {
-        // 空行表示一个事件结束
-        if (line.isEmpty) {
-          pendingEventType = null;
-          continue;
-        }
-        if (line.startsWith('event:')) {
-          pendingEventType = line.substring(6).trim();
-          continue;
-        }
-        if (line.startsWith('data:')) {
-          final data = line.substring(5).trim();
-          // 若服务端使用 event: token，我们仅在该事件下发送；否则统一发送
-          if (pendingEventType == null || pendingEventType == 'token') {
-            if (data.isNotEmpty) {
-              yield data;
-            }
-          }
-          continue;
-        }
-        // 兼容没有 event 前缀的纯文本行（某些实现直接输出token）
-        if (!line.contains(':')) {
-          yield line;
-        }
+      // 使用POST响应处理
+      await for (final token in _processSSEStream(response.stream)) {
+        yield token;
       }
-      print('✅ [AI Chat Service] SSE完成');
+      
     } catch (e) {
       print('💥 [AI Chat Service] SSE异常: $e');
+      print('📚 [AI Chat Service] 异常类型: ${e.runtimeType}');
       throw Exception('SSE错误: $e');
     } finally {
       client.close();
     }
+  }
+
+  /// 处理SSE流数据
+  Stream<String> _processSSEStream(Stream<List<int>> stream) async* {
+    String? pendingEventType;
+    final sseStream = stream
+        .transform(utf8.decoder)
+        .transform(const LineSplitter());
+
+    await for (final line in sseStream) {
+      print('📝 [AI Chat Service] 收到SSE行: $line');
+      
+      // 空行表示一个事件结束
+      if (line.isEmpty) {
+        pendingEventType = null;
+        continue;
+      }
+      
+      if (line.startsWith('event:')) {
+        pendingEventType = line.substring(6).trim();
+        print('🏷️ [AI Chat Service] 事件类型: $pendingEventType');
+        continue;
+      }
+      
+      if (line.startsWith('data:')) {
+        final data = line.substring(5).trim();
+        print('📄 [AI Chat Service] 数据: $data');
+        
+        // 检查是否是结束标记
+        if (data == '[DONE]' || data == 'data: [DONE]') {
+          print('✅ [AI Chat Service] 流式输出结束');
+          break;
+        }
+        
+        // 若服务端使用 event: token，我们仅在该事件下发送；否则统一发送
+        if (pendingEventType == null || pendingEventType == 'token' || pendingEventType == 'message') {
+          if (data.isNotEmpty && data != '[DONE]') {
+            print('🔄 [AI Chat Service] 输出token: $data');
+            yield data;
+          }
+        }
+        continue;
+      }
+      
+      // 兼容没有 event 前缀的纯文本行（某些实现直接输出token）
+      if (!line.contains(':') && line.isNotEmpty) {
+        print('🔄 [AI Chat Service] 直接输出: $line');
+        yield line;
+      }
+    }
+    print('✅ [AI Chat Service] SSE完成');
   }
 }

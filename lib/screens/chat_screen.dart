@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:markdown/markdown.dart' as md;
 import '../models/chat_message.dart';
 import '../services/ai_chat_service.dart';
 import '../providers/chat_provider.dart';
@@ -75,14 +76,30 @@ class _ChatScreenState extends State<ChatScreen> {
       chatProvider.updateLastAssistantMessage('', done: true);
       print('✅ [Chat Screen] 流式生成完成');
     } catch (e) {
-      print('❌ [Chat Screen] AI服务调用失败: $e');
-      // 移除加载消息，添加错误消息
-      chatProvider.removeLastMessage();
-      chatProvider.addMessage(ChatMessage(
-        content: '抱歉，发生了错误：$e',
-        isUser: false,
-        timestamp: DateTime.now(),
-      ));
+      print('❌ [Chat Screen] 流式AI服务调用失败: $e');
+      print('🔄 [Chat Screen] 尝试使用普通接口...');
+      
+      try {
+        // 如果流式接口失败，使用普通接口
+        final response = await _aiService.sendMessage(message: message);
+        // 移除加载消息，添加AI回复
+        chatProvider.removeLastMessage();
+        chatProvider.addMessage(ChatMessage(
+          content: response,
+          isUser: false,
+          timestamp: DateTime.now(),
+        ));
+        print('✅ [Chat Screen] 普通接口调用成功');
+      } catch (fallbackError) {
+        print('❌ [Chat Screen] 普通接口也失败: $fallbackError');
+        // 移除加载消息，添加错误消息
+        chatProvider.removeLastMessage();
+        chatProvider.addMessage(ChatMessage(
+          content: '抱歉，AI服务暂时不可用：$fallbackError',
+          isUser: false,
+          timestamp: DateTime.now(),
+        ));
+      }
     }
     
     _scrollToBottom();
@@ -216,6 +233,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       : MarkdownBody(
                           data: message.content,
                           selectable: true,
+                          extensionSet: md.ExtensionSet.gitHubFlavored,
                           styleSheet: MarkdownStyleSheet(
                             p: TextStyle(
                               color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -265,15 +283,21 @@ class _ChatScreenState extends State<ChatScreen> {
                               color: Theme.of(context).colorScheme.primary,
                             ),
                             tableBorder: TableBorder.all(
-                              color: Theme.of(context).colorScheme.outline.withOpacity(0.3),
+                              color: Theme.of(context).colorScheme.outline.withOpacity(0.5),
+                              width: 1.0,
                             ),
                             tableHead: TextStyle(
                               color: Theme.of(context).colorScheme.onSurfaceVariant,
                               fontWeight: FontWeight.bold,
+                              fontSize: 14,
                             ),
                             tableBody: TextStyle(
                               color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              fontSize: 14,
                             ),
+                            tableHeadAlign: TextAlign.center,
+                            tableCellsPadding: const EdgeInsets.all(8.0),
+                            tableColumnWidth: const FlexColumnWidth(),
                           ),
                         ),
             ),
